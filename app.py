@@ -4,7 +4,6 @@ import librosa
 import librosa.display
 import matplotlib.pyplot as plt
 import tensorflow as tf
-from tensorflow.keras.models import load_model
 import os
 import tempfile
 # Replace: from tensorflow.keras.models import load_model
