@@ -1,7 +1,9 @@
-streamlit>=1.25.0
-tensorflow>=2.16.0
-librosa>=0.10.0
-numpy>=1.23.5
-matplotlib>=3.7.0
-scikit-learn>=1.2.0
-soundfile>=0.12.0
+streamlit>=1.38,<2
+tensorflow-cpu==2.17.0
+keras==3.4.1
+numpy==1.26.4
+librosa==0.10.2.post1
+soundfile>=0.12.1
+matplotlib>=3.8
+pandas>=2.0,<2.3
+jinja2>=3.1
