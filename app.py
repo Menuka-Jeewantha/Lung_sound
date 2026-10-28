@@ -46,7 +46,7 @@ WEIGHT_CNN = 0.4
 
 
 # -----------------------------------------------------------------------------
-# Model Loading (Cached)
+# Model Loading (Cached with Legacy Deserialization Mapping)
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def load_models():
@@ -56,9 +56,17 @@ def load_models():
   hybrid_model = None
   cnn_model = None
 
+  # Map legacy Keras 2 initializers to Keras 3 equivalents for smooth loading
+  custom_objs = {
+      "OrthogonalInitializer": tf.keras.initializers.Orthogonal,
+      "Orthogonal": tf.keras.initializers.Orthogonal,
+  }
+
   if os.path.exists(hybrid_path):
     try:
-      hybrid_model = load_model(hybrid_path, compile=False, safe_mode=False)
+      hybrid_model = load_model(
+          hybrid_path, compile=False, safe_mode=False, custom_objects=custom_objs
+      )
     except Exception as e:
       st.error(f"Error loading Hybrid model: {e}")
   else:
@@ -69,7 +77,9 @@ def load_models():
 
   if os.path.exists(cnn_path):
     try:
-      cnn_model = load_model(cnn_path, compile=False, safe_mode=False)
+      cnn_model = load_model(
+          cnn_path, compile=False, safe_mode=False, custom_objects=custom_objs
+      )
     except Exception as e:
       st.error(f"Error loading CNN model: {e}")
   else:
