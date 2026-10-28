@@ -1,312 +1,226 @@
-"""
-Lung Sound Classification System - Streamlit app
-Stage 1: Binary model  -> Healthy vs Abnormal (lung_sound_binary_classification_model.h5)
-Stage 2: Ensemble model -> 9-class respiratory disease classification (ensemble_model.h5)
-"""
-
-import os
-
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-
-import tempfile
-from pathlib import Path
-
+import streamlit as st
+import numpy as np
 import librosa
 import librosa.display
-import matplotlib
-
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
-import streamlit as st
+import tensorflow as tf
 from tensorflow.keras.models import load_model
+import os
+import tempfile
 
-# --------------------------------------------------------------------------
-# Constants (matching your training pipeline)
-# --------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Page Configuration & Custom Styling
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Lung Sound Classification System",
+    page_icon="🫁",
+    layout="wide"
+)
+
+st.title("🫁 Automated Lung Sound Classification System")
+st.markdown("""
+This application utilizes Deep Learning and Audio Signal Processing to classify respiratory sounds recorded from the ICBHI 2017 dataset.
+It processes audio features (**MFCC**, **Mel Spectrogram**, **Chroma STFT**) and computes a weighted ensemble prediction using a **Hybrid Model (60%)** and a **CNN Model (40%)**.
+""")
+
+# -----------------------------------------------------------------------------
+# Global Constants & Configuration
+# -----------------------------------------------------------------------------
 N_FFT = 2048
 HOP_LENGTH = 512
 N_MFCC = 128
 FIXED_LENGTH = 264
-INPUT_SHAPE = (N_MFCC, FIXED_LENGTH, 3)
-
-SEGMENT_SAMPLES = (FIXED_LENGTH - 1) * HOP_LENGTH
 
 CLASS_NAMES = [
-    "Asthma",
-    "Bronchiectasis",
-    "Bronchiolitis",
-    "Bronchitis",
-    "COPD",
-    "Lung Fibrosis",
-    "Pleural Effusion",
-    "Pneumonia",
-    "URTI",
+    'Asthma', 
+    'Bronchiectasis', 
+    'Bronchiolitis', 
+    'Bronchitis',
+    'COPD', 
+    'Lung Fibrosis', 
+    'Pleural Effusion', 
+    'Pneumonia', 
+    'URTI'
 ]
 
-APP_DIR = Path(__file__).resolve().parent
+WEIGHT_HYBRID = 0.6
+WEIGHT_CNN = 0.4
 
-st.set_page_config(
-    page_title="Lung Sound Classifier",
-    page_icon="🫁",
-    layout="wide",
-)
-
-
-# --------------------------------------------------------------------------
-# Model loading
-# --------------------------------------------------------------------------
-@st.cache_resource(show_spinner="Loading models...")
+# -----------------------------------------------------------------------------
+# Model Loading (Cached)
+# -----------------------------------------------------------------------------
+@st.cache_resource
 def load_models():
-  possible_dirs = [APP_DIR, APP_DIR / "models"]
+    hybrid_path = 'lung_sound_Hybrid_multiclass_classification_model.h5'
+    cnn_path = 'lung_sound_multiclass_classification_model.h5'
+    
+    hybrid_model = None
+    cnn_model = None
+    
+    if os.path.exists(hybrid_path):
+        hybrid_model = load_model(hybrid_path, compile=False)
+    else:
+        st.warning(f"⚠️ Hybrid model file (`{hybrid_path}`) not found. Please upload or place it in the working directory.")
+        
+    if os.path.exists(cnn_path):
+        cnn_model = load_model(cnn_path, compile=False)
+    else:
+        st.warning(f"⚠️ CNN model file (`{cnn_path}`) not found. Please upload or place it in the working directory.")
+        
+    return hybrid_model, cnn_model
 
-  binary_path, ensemble_path = None, None
-  for d in possible_dirs:
-    b_candidate = d / "lung_sound_binary_classification_model.h5"
-    e_candidate = d / "ensemble_model.h5"
-    if b_candidate.exists():
-      binary_path = b_candidate
-    if e_candidate.exists():
-      ensemble_path = e_candidate
+# -----------------------------------------------------------------------------
+# Feature Extraction Function
+# -----------------------------------------------------------------------------
+def extract_features(audio_file_path):
+    # Load audio file with original sampling rate
+    y, sr = librosa.load(audio_file_path, sr=None)
+    
+    # 1. MFCC
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC, n_fft=N_FFT, hop_length=HOP_LENGTH)
+    mfcc = librosa.util.fix_length(mfcc, size=FIXED_LENGTH, axis=1)
+    
+    # 2. Mel Spectrogram
+    mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH)
+    mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
+    mel_spectrogram = librosa.util.fix_length(mel_spectrogram, size=FIXED_LENGTH, axis=1)
+    mel_spectrogram = np.resize(mel_spectrogram, (N_MFCC, FIXED_LENGTH))
+    
+    # 3. Chroma STFT
+    chroma_stft = librosa.feature.chroma_stft(y=y, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH)
+    chroma_stft = librosa.util.fix_length(chroma_stft, size=FIXED_LENGTH, axis=1)
+    chroma_stft = np.resize(chroma_stft, (N_MFCC, FIXED_LENGTH))
+    
+    # Stack features into 3D representation (128, 264, 3)
+    features_3d = np.stack((mfcc, mel_spectrogram, chroma_stft), axis=-1)
+    return y, sr, mfcc, mel_spectrogram, chroma_stft, features_3d
 
-  if not binary_path or not ensemble_path:
-    raise FileNotFoundError(
-        "Could not find 'lung_sound_binary_classification_model.h5' or"
-        " 'ensemble_model.h5' in the project directory."
-    )
+# -----------------------------------------------------------------------------
+# Main Interface & File Upload
+# -----------------------------------------------------------------------------
+hybrid_model, cnn_model = load_models()
 
-  binary_model = load_model(binary_path, compile=False)
-  ensemble_model = load_model(ensemble_path, compile=False)
-  return binary_model, ensemble_model
+st.sidebar.header("🕹️ Model Settings & Info")
+st.sidebar.markdown(f"""
+**Ensemble Model Weights:**
+- **Hybrid Model Weight:** {WEIGHT_HYBRID}
+- **CNN Model Weight:** {WEIGHT_CNN}
 
+**Target Respiratory Conditions ({len(CLASS_NAMES)}):**
+- Asthma
+- Bronchiectasis
+- Bronchiolitis
+- Bronchitis
+- COPD
+- Lung Fibrosis
+- Pleural Effusion
+- Pneumonia
+- URTI (Upper Respiratory Tract Infection)
+""")
 
-# --------------------------------------------------------------------------
-# Audio processing & features
-# --------------------------------------------------------------------------
-def load_audio(uploaded_file):
-  suffix = Path(uploaded_file.name).suffix or ".wav"
-  with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-    tmp.write(uploaded_file.getvalue())
-    tmp_path = tmp.name
-  try:
-    y, sr = librosa.load(tmp_path, sr=None)
-  finally:
-    os.remove(tmp_path)
-  return y, sr
+uploaded_file = st.file_uploader("📂 Upload a Lung Sound Audio File (.wav)", type=["wav", "mp3", "ogg"])
 
+if uploaded_file is not None:
+    # Save uploaded file to a temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        temp_audio_path = tmp_file.name
 
-def peak_normalize(y):
-  peak = float(np.max(np.abs(y))) if len(y) else 0.0
-  return y / peak if peak > 0 else y
+    st.subheader("🔊 Audio Player & Feature Visualizations")
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.audio(temp_audio_path, format="audio/wav")
+        st.info("Uploaded Audio Sample successfully loaded.")
 
+    # Extract Features
+    with st.spinner("Extracting audio features (MFCC, Mel Spectrogram, Chroma)..."):
+        y, sr, mfcc, mel_spec, chroma, features_3d = extract_features(temp_audio_path)
 
-def split_segments(y, max_segments):
-  if len(y) <= SEGMENT_SAMPLES:
-    return [y]
-  n_full = len(y) // SEGMENT_SAMPLES
-  segs = [
-      y[i * SEGMENT_SAMPLES : (i + 1) * SEGMENT_SAMPLES] for i in range(n_full)
-  ]
-  tail = y[n_full * SEGMENT_SAMPLES :]
-  if len(tail) >= SEGMENT_SAMPLES // 2:
-    segs.append(tail)
-  return segs[:max_segments]
+    # Feature Visualizations
+    tab1, tab2, tab3, tab4 = st.tabs(["Waveform", "MFCC", "Mel Spectrogram", "Chroma STFT"])
+    
+    with tab1:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        librosa.display.waveshow(y, sr=sr, ax=ax, color='crimson')
+        ax.set_title("Raw Audio Waveform")
+        st.pyplot(fig)
+        plt.close()
 
+    with tab2:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        img = librosa.display.specshow(mfcc, x_axis='time', sr=sr, hop_length=HOP_LENGTH, ax=ax)
+        fig.colorbar(img, ax=ax)
+        ax.set_title("MFCC (128 Coefficients)")
+        st.pyplot(fig)
+        plt.close()
 
-def extract_features(y, sr):
-  mfcc = librosa.feature.mfcc(
-      y=y, sr=sr, n_mfcc=N_MFCC, n_fft=N_FFT, hop_length=HOP_LENGTH
-  )
-  mfcc = librosa.util.fix_length(mfcc, size=FIXED_LENGTH, axis=1)
+    with tab3:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        img = librosa.display.specshow(mel_spec, x_axis='time', y_axis='mel', sr=sr, hop_length=HOP_LENGTH, ax=ax)
+        fig.colorbar(img, ax=ax, format="%+2.0f dB")
+        ax.set_title("Mel Spectrogram (dB)")
+        st.pyplot(fig)
+        plt.close()
 
-  mel = librosa.feature.melspectrogram(
-      y=y, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH
-  )
-  mel = librosa.power_to_db(mel, ref=np.max)
-  mel = librosa.util.fix_length(mel, size=FIXED_LENGTH, axis=1)
-  mel = np.resize(mel, (N_MFCC, FIXED_LENGTH))
+    with tab4:
+        fig, ax = plt.subplots(figsize=(10, 3))
+        img = librosa.display.specshow(chroma, x_axis='time', y_axis='chroma', sr=sr, hop_length=HOP_LENGTH, ax=ax)
+        fig.colorbar(img, ax=ax)
+        ax.set_title("Chroma STFT")
+        st.pyplot(fig)
+        plt.close()
 
-  chroma = librosa.feature.chroma_stft(
-      y=y, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH
-  )
-  chroma = librosa.util.fix_length(chroma, size=FIXED_LENGTH, axis=1)
-  chroma = np.resize(chroma, (N_MFCC, FIXED_LENGTH))
+    # Model Inference Section
+    st.divider()
+    st.subheader("🔍 Disease Classification Results")
 
-  return np.stack((mfcc, mel, chroma), axis=-1).astype("float32")
+    if hybrid_model is None or cnn_model is None:
+        st.error("❌ Models could not be loaded. Please ensure `lung_sound_Hybrid_multiclass_classification_model.h5` and `lung_sound_multiclass_classification_model.h5` are placed in the application folder.")
+    else:
+        # Prepare batch dimension for input: (1, 128, 264, 3)
+        input_data = np.expand_dims(features_3d, axis=0)
 
+        with st.spinner("Running ensemble inference..."):
+            hybrid_pred = hybrid_model.predict(input_data)[0]
+            cnn_pred = cnn_model.predict(input_data)[0]
 
-def predict_binary(model, X, abnormal_is_one):
-  p = model.predict(X, verbose=0).reshape(-1)
-  p_abnormal = p if abnormal_is_one else 1.0 - p
-  return float(np.mean(p_abnormal))
+            # Weighted Average Ensemble Prediction
+            ensemble_pred = (WEIGHT_HYBRID * hybrid_pred) + (WEIGHT_CNN * cnn_pred)
+            predicted_class_idx = np.argmax(ensemble_pred)
+            predicted_disease = CLASS_NAMES[predicted_class_idx]
+            confidence = ensemble_pred[predicted_class_idx] * 100
 
+        # Show Primary Result
+        res_col1, res_col2 = st.columns(2)
+        with res_col1:
+            st.metric("Predicted Disease Condition", predicted_disease)
+        with res_col2:
+            st.metric("Ensemble Confidence Score", f"{confidence:.2f}%")
 
-def predict_ensemble(model, X):
-  preds = model.predict(X, verbose=0)
-  return preds.mean(axis=0)
+        # Class Probabilities Breakdown
+        st.markdown("### 📊 Ensemble Class Probability Breakdown")
+        
+        # Sort classes by probability for nicer presentation
+        prob_dict = {CLASS_NAMES[i]: float(ensemble_pred[i]) for i in range(len(CLASS_NAMES))}
+        sorted_probs = dict(sorted(prob_dict.items(), key=lambda item: item[1], reverse=True))
 
+        for disease, prob in sorted_probs.items():
+            st.write(f"**{disease}**: {prob * 100:.2f}%")
+            st.progress(float(prob))
 
-# --------------------------------------------------------------------------
-# Plotting Helpers
-# --------------------------------------------------------------------------
-def plot_probabilities(probs):
-  order = np.argsort(probs)
-  fig, ax = plt.subplots(figsize=(7, 4))
-  colors = ["#c9d6e8"] * len(order)
-  colors[-1] = "#1f6feb"
-  ax.barh([CLASS_NAMES[i] for i in order], probs[order] * 100, color=colors)
-  for y_pos, i in enumerate(order):
-    ax.text(
-        probs[i] * 100 + 1,
-        y_pos,
-        f"{probs[i] * 100:.1f}%",
-        va="center",
-        fontsize=9,
-    )
-  ax.set_xlim(0, 110)
-  ax.set_xlabel("Probability (%)")
-  ax.spines[["top", "right"]].set_visible(False)
-  fig.tight_layout()
-  return fig
+        # Show Individual Model Contributions
+        with st.expander("🔎 View Individual Model Probabilities"):
+            m_col1, m_col2 = st.columns(2)
+            with m_col1:
+                st.markdown("**Hybrid Model Predictions (Weight: 0.6):**")
+                for i, cname in enumerate(CLASS_NAMES):
+                    st.write(f"- {cname}: {hybrid_pred[i]*100:.2f}%")
+            with m_col2:
+                st.markdown("**CNN Model Predictions (Weight: 0.4):**")
+                for i, cname in enumerate(CLASS_NAMES):
+                    st.write(f"- {cname}: {cnn_pred[i]*100:.2f}%")
 
-
-def plot_audio_views(y, sr, features):
-  fig, axes = plt.subplots(1, 3, figsize=(16, 3.6))
-  librosa.display.waveshow(y, sr=sr, ax=axes[0], color="#1f6feb")
-  axes[0].set_title("Waveform")
-  librosa.display.specshow(
-      features[:, :, 1],
-      sr=sr,
-      hop_length=HOP_LENGTH,
-      x_axis="time",
-      y_axis="mel",
-      ax=axes[1],
-  )
-  axes[1].set_title("Mel spectrogram (dB)")
-  librosa.display.specshow(
-      features[:, :, 0], sr=sr, hop_length=HOP_LENGTH, x_axis="time", ax=axes[2]
-  )
-  axes[2].set_title("MFCC")
-  fig.tight_layout()
-  return fig
-
-
-# --------------------------------------------------------------------------
-# UI Setup
-# --------------------------------------------------------------------------
-with st.sidebar:
-  st.header("Settings")
-  abnormal_is_one = (
-      st.radio(
-          "Binary model output = 1 means", ["Abnormal", "Healthy"], index=0
-      )
-      == "Abnormal"
-  )
-  threshold = st.slider("Abnormal threshold", 0.05, 0.95, 0.50, 0.05)
-  always_classify = st.checkbox(
-      "Always run disease classifier",
-      value=False,
-      help="Run the 9-class ensemble model even if the sound is screened as healthy.",
-  )
-  normalize_audio = st.checkbox("Peak-normalise audio", value=True)
-  use_segments = st.checkbox("Analyse long recordings in windows", value=True)
-  max_segments = st.slider("Max windows", 1, 30, 10, disabled=not use_segments)
-
-st.title("🫁 Lung Sound Classification System")
-st.caption("Stage 1: Binary Screening → Stage 2: 9-Class Ensemble Model")
-st.info(
-    "Research/educational prototype. It is **not** a medical device and must not"
-    " be used for diagnosis or treatment decisions."
-)
-
-# Load models
-try:
-  binary_model, ensemble_model = load_models()
-except Exception as exc:
-  st.error(f"Failed to load models: {exc}")
-  st.stop()
-
-uploaded = st.file_uploader(
-    "Upload a lung sound recording", type=["wav", "mp3", "flac", "ogg"]
-)
-
-if uploaded is None:
-  st.stop()
-
-st.audio(uploaded.getvalue())
-
-if not st.button("Analyse", type="primary"):
-  st.stop()
-
-with st.spinner("Extracting features and running models..."):
-  try:
-    y, sr = load_audio(uploaded)
-  except Exception as exc:
-    st.error(f"Could not read this audio file: {exc}")
-    st.stop()
-
-  if len(y) < N_FFT:
-    st.error("Recording is too short to analyse.")
-    st.stop()
-
-  if normalize_audio:
-    y = peak_normalize(y)
-
-  segments = split_segments(y, max_segments) if use_segments else [y]
-  X = np.stack([extract_features(seg, sr) for seg in segments])
-
-  p_abnormal = predict_binary(binary_model, X, abnormal_is_one)
-  is_abnormal = p_abnormal >= threshold
-
-  ens_probs = None
-  if is_abnormal or always_classify:
-    ens_probs = predict_ensemble(ensemble_model, X)
-
-# Display Results
-st.divider()
-st.subheader("Results")
-c1, c2, c3 = st.columns(3)
-c1.metric(
-    "Duration",
-    f"{len(y) / sr:.1f} s",
-    help=f"Sample rate {sr} Hz · {len(segments)} window(s)",
-)
-c2.metric("Screening", "Abnormal" if is_abnormal else "Healthy")
-c3.metric("P(abnormal)", f"{p_abnormal * 100:.1f}%")
-st.progress(min(max(p_abnormal, 0.0), 1.0))
-
-if not is_abnormal and ens_probs is None:
-  st.success("No respiratory abnormality detected by the binary model.")
-elif ens_probs is not None:
-  top = int(np.argmax(ens_probs))
-  if is_abnormal:
-    st.warning(
-        f"Abnormal lung sound detected. Most likely condition:"
-        f" **{CLASS_NAMES[top]}** ({ens_probs[top] * 100:.1f}%)"
-    )
-  else:
-    st.info(
-        f"Sound screened as healthy; disease classifier leans towards:"
-        f" **{CLASS_NAMES[top]}** ({ens_probs[top] * 100:.1f}%)"
-    )
-
-  if ens_probs[top] < 0.5:
-    st.caption(
-        "⚠️ Low confidence: no single class dominates. Treat this prediction"
-        " with caution."
-    )
-
-  left, right = st.columns([3, 2])
-  with left:
-    fig = plot_probabilities(ens_probs)
-    st.pyplot(fig)
-    plt.close(fig)
-  with right:
-    st.markdown("**Top 3 Predictions**")
-    for i in np.argsort(ens_probs)[::-1][:3]:
-      st.write(f"{CLASS_NAMES[i]} — {ens_probs[i] * 100:.1f}%")
-
-with st.expander("Audio & feature visualisation (first window)"):
-  fig = plot_audio_views(segments[0], sr, X[0])
-  st.pyplot(fig)
-  plt.close(fig)
+    # Clean up temporary file
+    if os.path.exists(temp_audio_path):
+        os.remove(temp_audio_path)
