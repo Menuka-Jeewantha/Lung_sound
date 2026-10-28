@@ -49,6 +49,10 @@ WEIGHT_CNN = 0.4
 # Model Loading (Cached with Legacy Deserialization Mapping)
 # -----------------------------------------------------------------------------
 @st.cache_resource
+# -----------------------------------------------------------------------------
+# Model Loading (Cached with Legacy Deserialization Fix)
+# -----------------------------------------------------------------------------
+@st.cache_resource
 def load_models():
   hybrid_path = "lung_sound_Hybrid_multiclass_classification_model.h5"
   cnn_path = "lung_sound_multiclass_classification_model.h5"
@@ -56,10 +60,23 @@ def load_models():
   hybrid_model = None
   cnn_model = None
 
-  # Map legacy Keras 2 initializers to Keras 3 equivalents for smooth loading
+  # Custom objects mapping for legacy Keras 2 initializers
+  class LegacyOrthogonal(tf.keras.initializers.Initializer):
+
+    def __init__(self, gain=1.0, seed=None):
+      self.gain = gain
+      self.seed = seed
+      self._ortho = tf.keras.initializers.Orthogonal(gain=gain, seed=seed)
+
+    def __call__(self, shape, dtype=None, **kwargs):
+      return self._ortho(shape, dtype=dtype, **kwargs)
+
+    def get_config(self):
+      return {"gain": self.gain, "seed": self.seed}
+
   custom_objs = {
-      "OrthogonalInitializer": tf.keras.initializers.Orthogonal,
-      "Orthogonal": tf.keras.initializers.Orthogonal,
+      "OrthogonalInitializer": LegacyOrthogonal,
+      "Orthogonal": LegacyOrthogonal,
   }
 
   if os.path.exists(hybrid_path):
